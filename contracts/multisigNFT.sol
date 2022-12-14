@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
-contract MultiSigWallet  is IERC721Receiver {
+contract MultiSigWallet  is IERC721Receiver, IERC165{
     event Deposit(address indexed sender, uint amount);
     event Submit(uint indexed txId);
     event Approve(address indexed owner, uint indexed txId);
@@ -13,17 +13,18 @@ contract MultiSigWallet  is IERC721Receiver {
     event Execute(uint indexed txId);
     event NFTreceived(address contractAddress, uint tokenId, address operator, address from, bytes data);
 
-    /// TODO: Change to sending a NFT
+    /// TODO: add ERC1155 support
     struct Transaction {
         address to;
-        uint value;
         bytes data;
         bool executed;
+        uint index;
     }
 
     struct NFT {
         address contractAddress;
         uint tokenId;
+        bytes4 standard;
     }
 
     address[] public owners;
@@ -79,22 +80,28 @@ contract MultiSigWallet  is IERC721Receiver {
         emit Deposit(msg.sender,msg.value);
     }
 
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return
+            interfaceId == type(IERC721Receiver).interfaceId ||
+            interfaceId == type(IERC165).interfaceId;
+    }
+
     function onERC721Received(
         address operator,
         address from,
         uint256 tokenId,
         bytes calldata data
     ) external returns (bytes4){
-        allNFTs.push(NFT({contractAddress: msg.sender, tokenId: tokenId}));
+        allNFTs.push(NFT({contractAddress: msg.sender, tokenId: tokenId, standard: type(IERC721).interfaceId}));
         emit NFTreceived(msg.sender, tokenId, operator,from, data);
         return IERC721Receiver.onERC721Received.selector;
     }
     
     /// TODO:Submitting NFT transfer
-    function submit(address _to, uint _value, bytes calldata _data) external onlyOwner {
+    function submit(address _to, uint _txIndex, bytes calldata _data) external onlyOwner {
         transactions.push(Transaction({
             to: _to,
-            value: _value,
+            index: _txIndex,
             data: _data,
             executed: false
         }));
@@ -111,15 +118,7 @@ contract MultiSigWallet  is IERC721Receiver {
         emit Approve(msg.sender,_txId);
     } 
     
-    function _getApprovalCount(uint _txId) private view returns (uint count){
-        for(uint i = 0; i < owners.length; i++){
-            if(approved[_txId][owners[i]]){
-                count++;
-            }
-        }
-    }
-    
-    ///TODO: executing NFT transfer
+    ///TODO: add ERC1155 transfer
     function execute(uint _txId) external 
     onlyOwner
     txExists(_txId) 
@@ -128,14 +127,26 @@ contract MultiSigWallet  is IERC721Receiver {
         require(_getApprovalCount(_txId) >= required, "not enough approvals");
         Transaction storage tr = transactions[_txId];
         tr.executed = true;
-        (bool success, ) = tr.to.call{value: tr.value}(tr.data);
-        require(success, "tx not executed");
-       emit Execute(_txId); 
+        NFT memory nft = allNFTs[tr.index];
+        if(nft.standard == type(IERC721).interfaceId) _transferERC721(nft.contractAddress,tr.to, nft.tokenId);
+        emit Execute(_txId); 
     }
     
     function revoke(uint _txId) external onlyOwner txExists(_txId) notExecuted(_txId) {
         require(approved[_txId][msg.sender], "is not approved");
         approved[_txId][msg.sender] = false;
         emit Revoke(msg.sender, _txId);
+    }
+
+    function _getApprovalCount(uint _txId) private view returns (uint count){
+        for(uint i = 0; i < owners.length; i++){
+            if(approved[_txId][owners[i]]){
+                count++;
+            }
+        }
+    }
+
+    function _transferERC721(address _contract, address _to, uint _tokenId) private {
+        IERC721(_contract).safeTransferFrom(address(this), _to, _tokenId);
     }
 }
